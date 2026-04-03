@@ -20,7 +20,7 @@ on:
 
 env:
   DEPLOY_CONTAINER_NAME: vpe04
-  APP_PORT: "8000"
+  APP_PORT: "8080"
 
 jobs:
   build-and-push:
