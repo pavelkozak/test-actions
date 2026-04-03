@@ -24,6 +24,35 @@ def server_time() -> dict[str, str]:
     }
 
 
+def _utc_today():
+    return datetime.now(timezone.utc).date()
+
+
+@app.get("/date")
+def server_date() -> dict[str, str]:
+    """Календарная дата сервера в UTC (ISO 8601 date)."""
+    d = _utc_today()
+    return {
+        "iso": d.isoformat(),
+        "year": str(d.year),
+        "month": str(d.month),
+        "day": str(d.day),
+    }
+
+
+@app.get("/date/iso")
+def server_date_iso() -> dict[str, str]:
+    """Только дата в формате YYYY-MM-DD (UTC)."""
+    return {"date": _utc_today().isoformat()}
+
+
+@app.get("/date/ru")
+def server_date_ru() -> dict[str, str]:
+    """Дата в формате ДД.ММ.ГГГГ (UTC)."""
+    d = _utc_today()
+    return {"dmy": f"{d.day:02d}.{d.month:02d}.{d.year}"}
+
+
 if __name__ == "__main__":
     import uvicorn
 
