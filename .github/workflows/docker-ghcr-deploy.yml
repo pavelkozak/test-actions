@@ -1,0 +1,99 @@
+# Сборка образа → GitHub Container Registry (GHCR) → деплой на сервер по SSH.
+#
+# Секреты репозитория (Settings → Secrets and variables → Actions):
+#   SSH_HOST              — хост сервера (IP или домен); нестандартный порт: host:2222
+#   SSH_USER              — пользователь SSH
+#   SSH_PRIVATE_KEY       — приватный ключ (весь PEM, включая BEGIN/END)
+#   SSH_HOST_FINGERPRINT  — (опционально) SHA256 отпечаток хоста, см. README appleboy/ssh-action
+#   GHCR_USERNAME         — логин для docker login на сервере (часто ваш GitHub username)
+#   GHCR_READ_TOKEN       — PAT с правом read:packages (скачивание образа на сервере)
+#
+# Первый push в GHCR: пакет может быть приватным — в настройках пакета выдайте себе/организации доступ.
+
+name: Docker GHCR build and SSH deploy
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+env:
+  DEPLOY_CONTAINER_NAME: vpe04
+  APP_PORT: "8000"
+
+jobs:
+  build-and-push:
+    name: Build and push image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image_ref: ${{ steps.image-ref.outputs.image_ref }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Image name for GHCR (lowercase)
+        id: image-ref
+        run: |
+          lower=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
+          echo "IMAGE_BASE=ghcr.io/${lower}" >> "$GITHUB_ENV"
+          echo "image_ref=ghcr.io/${lower}:latest" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_BASE }}
+          tags: |
+            type=raw,value=latest,enable=true
+            type=sha,format=short
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    name: Deploy over SSH
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    steps:
+      - name: SSH — pull from GHCR and run container
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          fingerprint: ${{ secrets.SSH_HOST_FINGERPRINT }}
+          script_stop: true
+          command_timeout: 10m
+          script: |
+            set -euo pipefail
+            echo "${{ secrets.GHCR_READ_TOKEN }}" | docker login ghcr.io -u "${{ secrets.GHCR_USERNAME }}" --password-stdin
+            docker pull ${{ needs.build-and-push.outputs.image_ref }}
+            docker stop ${{ env.DEPLOY_CONTAINER_NAME }} 2>/dev/null || true
+            docker rm ${{ env.DEPLOY_CONTAINER_NAME }} 2>/dev/null || true
+            docker run -d \
+              --name ${{ env.DEPLOY_CONTAINER_NAME }} \
+              --restart unless-stopped \
+              -p ${{ env.APP_PORT }}:8000 \
+              ${{ needs.build-and-push.outputs.image_ref }}
